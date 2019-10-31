@@ -352,6 +352,102 @@ void TxnProcessor::RunMVCCScheduler() {
   //
   // [For now, run serial scheduler in order to make it through the test
   // suite]
-  RunSerialScheduler();
+
+  //SUSAH BANGET BINGUNG AKUTUH
+  Txn* txn;
+  while (tp_.Active()) {
+    // Start processing the next incoming transaction request.
+    if (txn_requests_.Pop(&txn)) {
+      tp_.RunTask(new Method<TxnProcessor, void, Txn*>(
+            this,
+            &TxnProcessor::MVCCExecuteTxn,
+            txn));
+    }
+  }
+  txn_results_.Push(txn);
 }
+ 
+void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
+  //1. Read all necessary data for this transaction from storage (Note that you should lock the key before each read)
+  for (set<Key>::iterator it = txn->readset_.begin();
+       it != txn->readset_.end(); ++it) {
+    Value result;
+    //lock before read
+    storage_->Lock(*it);
+    if (storage_->Read(*it, &result)) {
+      txn->reads_[*it] = result;
+    }
+    storage_->Unlock(*it);
+  }
+
+  // Also read everything in from writeset.
+  for (set<Key>::iterator it = txn->writeset_.begin();
+       it != txn->writeset_.end(); ++it) {
+    // Save each read result iff record exists in storage.
+    Value result;
+    //lock before read
+    storage_->Lock(*it);
+    if (storage_->Read(*it, &result)) {
+     
+      txn->reads_[*it] = result;
+    }   
+    storage_->Unlock(*it);
+  }
+
+  //2. Execute the transaction logic (i.e. call Run() on the transaction)
+    
+  txn->Run();
+
+  //3. Acquire all locks for keys in the write_set_
+  for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
+    storage_->Lock(*it);
+  }
+
+  //4. Call MVCCStorage::CheckWrite method to check all keys in the write_set_
+    
+  bool verified = false;
+  for (set<Key>::iterator it = txn->writeset_.begin();
+       it != txn->writeset_.end(); ++it) {
+    if (storage_->CheckWrite(*it, txn->unique_id_)) {
+      verified = true;
+    }
+    else {
+      verified =  false;
+      break;
+    }
+  }
+
+  //5. If (each key passed the check)
+    
+  if (verified) {  
+    //6. Apply the writes
+    ApplyWrites(txn);
+
+    //7.Release all locks for keys in the write_set_
+    for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
+      storage_->Unlock(*it);
+    }
+  }
+
+  // 8. else if (at least one key failed the check)
+  else {
+    //9. Release all locks for keys in the write_set_
+    for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
+      storage_->Unlock(*it);
+    }
+    
+    //10. Cleanup txn
+    txn->reads_.empty();
+    txn->writes_.empty();
+    txn->status_ = INCOMPLETE;
+
+    //11. Completely restart the transaction
+    NewTxnRequest(txn);
+
+  }
+  // Hand the txn back to the RunScheduler thread.
+  completed_txns_.Push(txn);
+}
+
+
 

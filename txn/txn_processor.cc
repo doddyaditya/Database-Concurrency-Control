@@ -122,17 +122,18 @@ void TxnProcessor::RunLockingScheduler() {
     // Start processing the next incoming transaction request.
     if (txn_requests_.Pop(&txn)) {
       bool blocked = false;
-      // Request read locks.
-      for (set<Key>::iterator it = txn->readset_.begin();
-           it != txn->readset_.end(); ++it) {
-        if (!lm_->ReadLock(txn, *it)) {
+      int total = txn->readset_.size() + txn->writeset_.size();
+      
+      // Request read locks (EXCLUSIVE LOCK if part A)
+      for (set<Key>::iterator itr = txn->readset_.begin(); itr != txn->readset_.end(); itr++) {
+        // block if the read lock could not be set (needs to wait or destroyed if total > 1)
+        if (!lm_ ->ReadLock(txn, *itr)) {
           blocked = true;
-          // If readset_.size() + writeset_.size() > 1, and blocked, just abort
-          if (txn->readset_.size() + txn->writeset_.size() > 1) {
+          if (total > 1) {
             // Release all locks that already acquired
-            for (set<Key>::iterator it_reads = txn->readset_.begin(); true; ++it_reads) {
-              lm_->Release(txn, *it_reads);
-              if (it_reads == it) {
+            for (set<Key>::iterator itr_reads = txn->readset_.begin(); true; ++itr_reads) {
+              lm_->Release(txn, *itr_reads);
+              if (itr_reads == itr) {
                 break;
               }
             }
@@ -141,22 +142,20 @@ void TxnProcessor::RunLockingScheduler() {
         }
       }
 
-      if (blocked == false) {
-        // Request write locks.
-        for (set<Key>::iterator it = txn->writeset_.begin();
-             it != txn->writeset_.end(); ++it) {
-          if (!lm_->WriteLock(txn, *it)) {
+      if (!blocked) {
+        // Request write locks (EXCLUSIVE LOCK)
+        for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
+          // block if the read lock could not be set (needs to wait or destroyed if total > 1)
+          if (!lm_ ->WriteLock(txn, *itr)) {
             blocked = true;
-            // If readset_.size() + writeset_.size() > 1, and blocked, just abort
-            if (txn->readset_.size() + txn->writeset_.size() > 1) {
+            if (total > 1) {
               // Release all read locks that already acquired
-              for (set<Key>::iterator it_reads = txn->readset_.begin(); it_reads != txn->readset_.end(); ++it_reads) {
-                lm_->Release(txn, *it_reads);
+              for (set<Key>::iterator itr_reads = txn->readset_.begin(); itr_reads != txn->readset_.end(); ++itr_reads) {
+                lm_->Release(txn, *itr_reads);
               }
-              // Release all write locks that already acquired
-              for (set<Key>::iterator it_writes = txn->writeset_.begin(); true; ++it_writes) {
-                lm_->Release(txn, *it_writes);
-                if (it_writes == it) {
+              for (set<Key>::iterator itr_writes = txn->writeset_.begin(); true; ++itr_writes) {
+                lm_->Release(txn, *itr_writes);
+                if (itr_writes == itr) {
                   break;
                 }
               }
@@ -165,61 +164,64 @@ void TxnProcessor::RunLockingScheduler() {
           }
         }
       }
-
+      
       // If all read and write locks were immediately acquired, this txn is
-      // ready to be executed. Else, just restart the txn
-      if (blocked == false) {
+      if (!blocked) {
         ready_txns_.push_back(txn);
-      } else if (blocked == true && (txn->writeset_.size() + txn->readset_.size() > 1)){
-        mutex_.Lock();
-        txn->unique_id_ = next_unique_id_;
-        next_unique_id_++;
-        txn_requests_.Push(txn);
-        mutex_.Unlock();
+      }
+      // If the transaction is blocked, check the validity
+      // Rule no.2: transaction waits only if it only involves one read or write
+      // If not-> delete all acquired locks -> restart transation
+      else if (blocked && (total > 1)) {
+        NewTxnRequest(txn);
       }
     }
 
     // Process and commit all transactions that have finished running.
     while (completed_txns_.Pop(&txn)) {
       // Commit/abort txn according to program logic's commit/abort decision.
-      if (txn->Status() == COMPLETED_C) {
-        ApplyWrites(txn);
-        txn->status_ = COMMITTED;
-      } else if (txn->Status() == COMPLETED_A) {
+      // If transaction is aborted => abort
+      if (txn->Status() == COMPLETED_A) {
         txn->status_ = ABORTED;
-      } else {
+      }
+      // If the transaction is commited => write the result to storage
+      else if (txn->Status() == COMPLETED_C) {
+        for (map<Key, Value>::iterator itr = txn->writes_.begin(); itr != txn->writes_.end(); ++itr) {
+          storage_->Write(itr->first, itr->second, txn->unique_id_);
+        }
+        txn->status_ = COMMITTED;
+      }
+      // Else the status is invalid
+      else {
         // Invalid TxnStatus!
         DIE("Completed Txn has invalid TxnStatus: " << txn->Status());
       }
 
-      // Release read locks.
-      for (set<Key>::iterator it = txn->readset_.begin();
-           it != txn->readset_.end(); ++it) {
-        lm_->Release(txn, *it);
+      // Release read locks
+      for (set<Key>::iterator itr = txn->readset_.begin(); itr != txn->readset_.end(); ++itr) {
+        lm_->Release(txn, *itr);
       }
-      // Release write locks.
-      for (set<Key>::iterator it = txn->writeset_.begin();
-           it != txn->writeset_.end(); ++it) {
-        lm_->Release(txn, *it);
+      // Release all write locks
+      for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); ++itr) {
+        lm_->Release(txn, *itr);
       }
 
       // Return result to client.
       txn_results_.Push(txn);
     }
 
-    // Start executing all transactions that have newly acquired all their
-    // locks.
-    while (ready_txns_.size()) {
-      // Get next ready txn from the queue.
+
+    // Executing ready transactions
+    while (ready_txns_.size() > 0) {
+      // Get next ready txn from the queue
       txn = ready_txns_.front();
       ready_txns_.pop_front();
 
-      // Start txn running in its own thread.
+      // Start txn running in its own thread
       tp_.RunTask(new Method<TxnProcessor, void, Txn*>(
             this,
             &TxnProcessor::ExecuteTxn,
             txn));
-
     }
   }
 }

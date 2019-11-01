@@ -115,7 +115,9 @@ void TxnProcessor::RunSerialScheduler() {
 }
 
 void TxnProcessor::RunLockingScheduler() {
+  // Sets the transation variable
   Txn* txn;
+  // As long as the transaction variable is active...
   while (tp_.Active()) {
     // Start processing the next incoming transaction request.
     if (txn_requests_.Pop(&txn)) {
@@ -264,7 +266,6 @@ void TxnProcessor::ApplyWrites(Txn* txn) {
  * Precondition: No storage writes are occuring during execution.
  */
 bool TxnProcessor::OCCValidateTransaction(const Txn &txn) const {
-  // Check
   for (auto&& key : txn.readset_) {
     if (txn.occ_start_time_ < storage_->Timestamp(key))
       return false;
@@ -281,47 +282,75 @@ bool TxnProcessor::OCCValidateTransaction(const Txn &txn) const {
 void TxnProcessor::RunOCCScheduler() {
   // Fetch transaction requests, and immediately begin executing them.
   Txn *txn;
+
+  // While the transaction is active
   while (tp_.Active()) {
+    // If there is request, pop it -> assign it to txn variable
     if (txn_requests_.Pop(&txn)) {
-      // Start txn running in its own thread.
+      // Start txn running in its own thread, then run the transaction
       txn->occ_start_time_ = GetTime();
-      tp_.RunTask(new Method<TxnProcessor, void, Txn*>(this,&TxnProcessor::ExecuteTxn,txn));
+      tp_.RunTask(new Method<TxnProcessor, void, Txn*>(this, &TxnProcessor::ExecuteTxn,txn));
     }
 
-    // Serially validate completed transactions;
+    // Check every finished transaction done by the request
+    // All transaction done by ExecuteTxn is put into the completed_txns_ queue
     Txn *finishedTask;
+    bool valid = true;
     while (completed_txns_.Pop(&finishedTask)) {
-      if (finishedTask->Status() == COMPLETED_A)
+
+      // Validating transaction
+      // All the timestamp of the resources read and write must be bigger than the transactions start time
+
+      // Check read time...
+      for (set<Key>::iterator itr = finishedTask->readset_.begin(); itr != finishedTask->readset_.end(); itr++) {
+        if (storage_->Timestamp(*itr) > finishedTask->occ_start_time_) {
+          valid = false;
+          break;
+        }
+      }
+
+      // Check write time...
+      for (set<Key>::iterator itr = finishedTask->writeset_.begin(); itr != finishedTask->writeset_.end(); itr++) {
+        if (storage_->Timestamp(*itr) > finishedTask->occ_start_time_) {
+          valid = false;
+          break;
+        }
+      }
+
+      // If the transaction is aborted...
+      // No need to run it again. Just put it out...
+      // Set the status to commited
+      if (finishedTask->Status() == COMPLETED_A) {
         finishedTask->status_ = ABORTED;
+      }
+      // If transaction is valid and not aborted => Write the write commands
+      // Set the status to COMMITTED
+      else if (valid && finishedTask->Status() == COMPLETED_C) {
+        // Write key and value for every finishedTask reads and writes before 
+        for (map<Key, Value>::iterator itr = finishedTask->writes_.begin(); itr != finishedTask->writes_.end(); ++itr) {
+          storage_->Write(itr->first, itr->second, finishedTask->unique_id_);
+        }
+        finishedTask->status_ = COMMITTED;
+      }
+      // Else if the task is COMMITED but not valid
+      // Redo the task again
+      else if (!valid && finishedTask->Status() == COMPLETED_C) {
+        // Set empty reads and writes
+        finishedTask->reads_.empty();
+        finishedTask->writes_.empty();
+        finishedTask->status_ = INCOMPLETE;
+
+        // Try transaction again
+        NewTxnRequest(finishedTask);
+        continue;
+      }
+      
+      // Else...
+      // That means the task status is invalid.
+      // KILL
       else {
-        bool valid = true;
-        for (set<Key>::iterator itr = finishedTask->readset_.begin(); itr != finishedTask->readset_.end(); itr++) {
-          if (storage_->Timestamp(*itr) > finishedTask->occ_start_time_) {
-            valid = false;
-            break;
-          }
-        }
-        for (set<Key>::iterator itr = finishedTask->writeset_.begin(); itr != finishedTask->writeset_.end(); itr++) {
-          if (storage_->Timestamp(*itr) > finishedTask->occ_start_time_) {
-            valid = false;
-            break;
-          }
-        }
-
-        if (valid) {
-          ApplyWrites(finishedTask);
-          finishedTask->status_ = COMMITTED;
-        } else {
-          finishedTask->reads_.empty();
-          finishedTask->writes_.empty();
-          finishedTask->status_ = INCOMPLETE;
-
-          mutex_.Lock();
-          txn->unique_id_ = next_unique_id_;
-          next_unique_id_++;
-          txn_requests_.Push(finishedTask);
-          mutex_.Unlock();
-        }
+        // Invalid TxnStatus!
+        DIE("Completed Txn has invalid TxnStatus: " << txn->Status());
       }
       txn_results_.Push(finishedTask);
     }

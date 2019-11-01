@@ -297,8 +297,8 @@ void TxnProcessor::RunOCCScheduler() {
     // Check every finished transaction done by the request
     // All transaction done by ExecuteTxn is put into the completed_txns_ queue
     Txn *finishedTask;
-    bool valid = true;
     while (completed_txns_.Pop(&finishedTask)) {
+      bool valid = true;
 
       // Validating transaction
       // All the timestamp of the resources read and write must be bigger than the transactions start time

@@ -31,16 +31,21 @@ LockManagerA::LockManagerA(deque<Txn*>* ready_txns) {
 }
 
 bool LockManagerA::WriteLock(Txn* txn, const Key& key) {
+  // New lock request (set as EXCLUSIVE) for the transaction
   LockRequest lockreq(EXCLUSIVE, txn);
 
-  if(lock_table_[key]){
+  // If the lock queue for the current element is empty, then create a new lock request deque
+  // If not then push the lock into the last element of the deque
+  if (lock_table_[key]){
     lock_table_[key]->push_back(lockreq);
-  }else{
-    deque<LockRequest> *tempdeque = new deque<LockRequest>(1,lockreq);
+  } else {
+    deque<LockRequest> *tempdeque = new deque<LockRequest>(1, lockreq);
     lock_table_[key] = tempdeque;
   }
 
-  if(lock_table_[key]->size()){
+  // IF the lock table size is 1, then the write is successful
+  // Else the transaction needs to wait longer to be served
+  if(lock_table_[key]->size() == 1){
     return true;
   }
   txn_waits_[txn]++;
@@ -54,22 +59,29 @@ bool LockManagerA::ReadLock(Txn* txn, const Key& key) {
 }
 
 void LockManagerA::Release(Txn* txn, const Key& key) {
+  // Add the deque for the requested resource
+  // Assume that the unlock has happened (deleteHappened)
   deque<LockRequest> *tempQueue = lock_table_[key];
-  bool deleteHappened = true; // Is the lock removed the lock owner?
+  bool deleteHappened = true;
 
-  // Delete the txn's exclusive lock.
+  // Loop the deque from the beginning until the end
+  // If the transaction is still in the queue
+  // Delete the transaction from the lock request deque
+  // Delete happened for the current transaction if the transaction is at the front
+  //  of the deque (first element of the lock request deque)
   for (deque<LockRequest>::iterator itr = tempQueue->begin(); itr < tempQueue->end(); ++itr) {
-    if (itr->txn_ == txn) { // TODO is it ok to just compare by address? YES
+    if (itr->txn_ == txn) { 
         tempQueue->erase(itr);
         break;
     }
     deleteHappened = false;
   }
 
+  // If the deque is still not empty after the deletion of the transaction
+  // The next transaction is set as the first element of the deque and reduce the wait time
+  // If the transaction wait time for the next transaction is 0 => next transaction is served
   if (!(tempQueue->size() < 1) && deleteHappened) {
-    // Give the next transaction the lock
     Txn *next_transaction = tempQueue->front().txn_;
-
     txn_waits_[next_transaction]--;
 
     if (txn_waits_[next_transaction] <= 0) {
@@ -80,10 +92,16 @@ void LockManagerA::Release(Txn* txn, const Key& key) {
 }
 
 LockMode LockManagerA::Status(const Key& key, vector<Txn*>* owners) {
+  // Checking if the lock request queue for certain resource is 0
+  // If it is, then the resource is UNLOCKED => return
   deque<LockRequest> *tempQueue = lock_table_[key];
   if (!tempQueue->size()) {
     return UNLOCKED;
   }
+
+  // If not, then set the clear current owners
+  // Change the owner with the transaction at the front of the lock request queue
+  // EXCLUSIVE => return
   owners->clear();
   owners->push_back(tempQueue->front().txn_);
   return EXCLUSIVE;

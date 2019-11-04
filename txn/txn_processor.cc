@@ -405,12 +405,11 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     if (storage_->Read(*itr, &result, txn->unique_id_)) {
       txn->reads_[*itr] = result;
     }
-
     // unlock:
     storage_->Unlock(*itr);
   }
 
-    // Save each read result iff record exists in storage.
+  //read from writeset
   for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
     Value result;
     //lock before read
@@ -418,16 +417,12 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     if (storage_->Read(*itr, &result, txn->unique_id_)) {
       txn->reads_[*itr] = result;
     }
-
     // unlock:
     storage_->Unlock(*itr);
   }
 
   //2. Execute the transaction logic (i.e. call Run() on the transaction)
-
   txn->Run();
-
-  //changeX
   completed_txns_.Push(txn);
 
   //3. Acquire all locks for ALL keys in the write_set_
@@ -439,16 +434,17 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
   bool verified = true;
   for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
     if (storage_->CheckWrite(*itr, txn->unique_id_)) {
+      //still true
       continue;
     }
     else {
+      //if ONLY one failure
       verified =  false;
       break;
     }
   }
   
   //5. If (each key passed the check)
-
   if (verified) {
     //6. Apply the writes
     ApplyWrites(txn);
@@ -457,8 +453,8 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); ++itr) {
       storage_->Unlock(*itr);
     }
+
     // Hand the txn back to the RunScheduler thread.
-    
     txn->status_ = COMMITTED;
     txn_results_.Push(txn);
   }
@@ -467,7 +463,6 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     //9. Release all locks for keys in the write_set_
     for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
       storage_->Unlock(*itr);
-    
     }
 
     //10. Cleanup txn
@@ -479,62 +474,4 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     NewTxnRequest(txn);
   }
 
-  // Execute txn's program logic.
-  txn->Run();
-	
-	// Lock the whole write-set!
-  for (set<Key>::iterator it = txn->writeset_.begin();
-       it != txn->writeset_.end(); ++it) {
-		// Lock key
-		storage_->Lock(*it);
-	}
-	
-	// Check if all keys in write set "pass"
-	bool failed = false;
-  for (map<Key, Value>::iterator it = txn->writes_.begin();
-       it != txn->writes_.end(); ++it) {
-		
-		if(!storage_->CheckWrite(it->first, txn->unique_id_)){
-			failed = true;
-			break;
-		}
-	}
-
-	if(failed)
-		MVCCAbortTransaction(txn);
-	else{
-		// Apply all the writes
-		for (map<Key, Value>::iterator it = txn->writes_.begin();
-				 it != txn->writes_.end(); ++it) {
-			storage_->Write(it->first, it->second, txn->unique_id_);
-		}
-	
-		// Release all write set locks
-		for (set<Key>::iterator it = txn->writeset_.begin();
-				 it != txn->writeset_.end(); ++it) {
-			storage_->Unlock(*it);
-		}
-	// Return result to client.
-	txn_results_.Push(txn);
-	}
-}
-
-void TxnProcessor::MVCCAbortTransaction(Txn* txn) {
-	// Release all write set locks
-  for (set<Key>::iterator it = txn->writeset_.begin();
-       it != txn->writeset_.end(); ++it) {
-		storage_->Unlock(*it);
-	}
-
-	// Clean up transaction
-	txn->reads_.clear();
-	txn->writes_.clear();
-	txn->status_ = INCOMPLETE;
-
-	// Restart transaction
-	mutex_.Lock();
-	txn->unique_id_ = next_unique_id_;
-	next_unique_id_++;
-	txn_requests_.Push(txn);
-	mutex_.Unlock(); 
 }

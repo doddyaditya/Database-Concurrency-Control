@@ -123,7 +123,7 @@ void TxnProcessor::RunLockingScheduler() {
     if (txn_requests_.Pop(&txn)) {
       bool blocked = false;
       int total = txn->readset_.size() + txn->writeset_.size();
-      
+
       // Request read locks (EXCLUSIVE LOCK if part A)
       for (set<Key>::iterator itr = txn->readset_.begin(); itr != txn->readset_.end(); itr++) {
         // block if the read lock could not be set (needs to wait or destroyed if total > 1)
@@ -164,7 +164,7 @@ void TxnProcessor::RunLockingScheduler() {
           }
         }
       }
-      
+
       // If all read and write locks were immediately acquired, this txn is
       if (!blocked) {
         ready_txns_.push_back(txn);
@@ -328,7 +328,7 @@ void TxnProcessor::RunOCCScheduler() {
       // If transaction is valid and not aborted => Write the write commands
       // Set the status to COMMITTED
       else if (valid && finishedTask->Status() == COMPLETED_C) {
-        // Write key and value for every finishedTask reads and writes before 
+        // Write key and value for every finishedTask reads and writes before
         for (map<Key, Value>::iterator itr = finishedTask->writes_.begin(); itr != finishedTask->writes_.end(); ++itr) {
           storage_->Write(itr->first, itr->second, finishedTask->unique_id_);
         }
@@ -346,7 +346,7 @@ void TxnProcessor::RunOCCScheduler() {
         NewTxnRequest(finishedTask);
         continue;
       }
-      
+
       // Else...
       // That means the task status is invalid.
       // KILL
@@ -394,7 +394,7 @@ void TxnProcessor::RunMVCCScheduler() {
     }
   }
 }
- 
+
 void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
 // read all the data from storage, locking keys individually
   for (set<Key>::iterator it = txn->readset_.begin();

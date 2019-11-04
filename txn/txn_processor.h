@@ -99,9 +99,11 @@ class TxnProcessor {
   // The following functions are for MVCC
   void MVCCExecuteTxn(Txn* txn);
 
-  bool MVCCCheckWrites(Txn* txn);
+  void MVCCCheckWrites(Txn* txn);
 
   void MVCCLockWriteKeys(Txn* txn);
+
+  void MVCCAbortTransaction(Txn* txn);
 
   void MVCCUnlockWriteKeys(Txn* txn);
 

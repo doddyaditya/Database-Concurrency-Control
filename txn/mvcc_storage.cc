@@ -45,46 +45,31 @@ bool MVCCStorage::Read(Key key, Value* result, int txn_unique_id) {
 	//
   // Hint: Iterate the version_lists and return the verion whose write timestamp
   // (version_id) is the largest write timestamp less than or equal to txn_unique_id.
-	//
-	
+  
+  //key not found
+  if (!mvcc_data_.count(key)){
+    return false;
+  }
 
-	if(mvcc_data_.count(key) == 0){
-		DIE("Couldn't find key " << key);
-		return false;
-	}
-	
-	deque<Version*>* versions = mvcc_data_[key];
-
-	if(versions == NULL)
-		DIE("Version list is null for key " << key);
-
-	// Make sure we found the best write timestamp
-	bool found_one = false;
-	Version* best;
-
-	// Start searching
-	for (deque<Version*>::iterator it = versions->begin(); it!=versions->end(); ++it){
-		Version* v = *it;
-
-		if(v == NULL){
-			DIE("Key " << key << " is null, transaction: " << txn_unique_id);
-		}
-
-		if(v->version_id_ <= txn_unique_id){
-			found_one = true;
-			best = v;
-			break;
-		}
-	}
-
-	// Make sure we actually found one
-	if(found_one){
-		*result = best->value_;
-		if(best->max_read_id_ < txn_unique_id)
-			best->max_read_id_ = txn_unique_id;
-		return true;
-	}else
-		return false;
+  deque<Version*> *data = mvcc_data_[key];
+  if (data->empty()) {
+    //no data
+    return false;
+  }
+  else {
+    int maxlessthan = 0;
+    deque<Version*> version_list = *data;
+    for (deque<Version*>::iterator itr = version_list.begin(); itr != version_list.end(); itr++){
+        Version* version = *itr;
+        //get largest less than version
+        if (version->version_id_ <= txn_unique_id && version->version_id_ > maxlessthan){
+          //set new version
+          *result = version->value_;
+          version->max_read_id_ = txn_unique_id;
+        }  
+    }
+  }
+  return true;
 }
 
 
@@ -101,22 +86,28 @@ bool MVCCStorage::CheckWrite(Key key, int txn_unique_id) {
   // write_set. Return true if this key passes the check, return false if not. 
   // Note that you don't have to call Lock(key) in this method, just
   // call Lock(key) before you call this method and call Unlock(key) afterward.
-	
-	if(mvcc_data_.count(key) == 0){
-		DIE("Bad key: " << key);
-	}
-	
-	deque<Version*>* versions = mvcc_data_[key];
-	
-	for (deque<Version*>::iterator it = versions->begin(); it!=versions->end(); ++it){
-		Version* v = *it;
-		
-		if(v == NULL)
-			DIE("Key " << key << " is null...");
+  
+  //key not found
+  if (!mvcc_data_.count(key)){
+    return false;
+  }
 
-		if(v->version_id_ > txn_unique_id || v->max_read_id_ > txn_unique_id)
-			return false;
-	}
+  deque<Version*> *data = mvcc_data_[key];
+  
+  if (data->empty()) {
+    //no data
+    return true;
+  }
+  else {
+    deque<Version*> version_list = *data;
+    //get latest version
+    Version* version = version_list.back();
+
+    //check if version valid
+    if (version->max_read_id_ > txn_unique_id){
+      return false;
+    }
+  }
   return true;
 }
 
@@ -130,38 +121,28 @@ void MVCCStorage::Write(Key key, Value value, int txn_unique_id) {
   // into the version_lists. Note that InitStorage() also calls this method to init storage. 
   // Note that you don't have to call Lock(key) in this method, just
   // call Lock(key) before you call this method and call Unlock(key) afterward.
-  // Note that the performance would be much better if you organize the versions in decreasing order.
-	//
-	Version* update = (Version*) malloc(sizeof(Version));
-	update->value_ 				= value;
-	update->version_id_ 	= txn_unique_id;
-	update->max_read_id_ 	= 0;
+
+  //create new version
+  Version* new_update = new Version();
+	new_update->value_ 				= value;
+	new_update->version_id_ 	= txn_unique_id;
+	new_update->max_read_id_ 	= 0;
 
 	deque<Version*>* versions;
 
-	if(mvcc_data_.count(key) > 0){
+	if(mvcc_data_.count(key) > 0) {
+    //key exists
 		versions = mvcc_data_[key];
-	}else{
+	}
+  else
+  {
+    //key not exists
 		versions = new deque<Version*>();
 		mvcc_data_[key] = versions;
 	}
-	// unordered_map<Key, deque<Version*>*>::const_iterator i;
-	// 
-	// i = mvcc_data_.find(key);
 
-	// Is it being used for initialization?
-	// if(i == mvcc_data_.end()){
-	// 	deque<Version*>* init = new deque<Version*>();
-	// 	mvcc_data_.insert(make_pair(key, init));
-	// 	i = mvcc_data_.find(key);
-
-	// 	// sanity check!
-	// 	if(i == mvcc_data_.end()) DIE("Couldn't add key " << key);
-	// }
-	// 
-	// deque<Version*>* versions = i->second;
-
-	versions->push_front(update);
+  //push to deque
+	versions->push_front(new_update);
 }
 
 

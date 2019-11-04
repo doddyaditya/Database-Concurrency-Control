@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
 
   cpu_set_t cs;
   CPU_ZERO(&cs);
-  CPU_SET(7, &cs);
+  CPU_SET(3, &cs);
   int ret = sched_setaffinity(0, sizeof(cs), &cs);
   if (ret) {
     perror("sched_setaffinity");

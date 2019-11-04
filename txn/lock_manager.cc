@@ -43,7 +43,7 @@ bool LockManagerA::WriteLock(Txn* txn, const Key& key) {
     lock_table_[key] = tempdeque;
   }
 
-  // IF the lock table size is 1, then the write is successful
+  // If the lock table size is 1, then the write is successful
   // Else the transaction needs to wait longer to be served
   if(lock_table_[key]->size() == 1){
     return true;

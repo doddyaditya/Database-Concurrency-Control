@@ -145,6 +145,8 @@ class TxnProcessor {
 
   // Lock Manager used for LOCKING concurrency implementations.
   LockManager* lm_;
+
+  void MVCCAbortTransaction(Txn* txn);
 };
 
 #endif  // _TXN_PROCESSOR_H_

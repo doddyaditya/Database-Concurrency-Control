@@ -79,9 +79,9 @@ void Benchmark(const vector<LoadGen*>& lg) {
   deque<Txn*> doneTxns;
 
   // For each MODE...
-  for (CCMode mode = SERIAL;
+  for (CCMode mode = MVCC;
       mode <= MVCC;
-      mode = static_cast<CCMode>(mode+1)) {
+      mode = static_cast<CCMode>(mode+2)) {
     // Print out mode name.
     cout << ModeToString(mode) << flush;
 

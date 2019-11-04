@@ -123,7 +123,7 @@ void TxnProcessor::RunLockingScheduler() {
     if (txn_requests_.Pop(&txn)) {
       bool blocked = false;
       int total = txn->readset_.size() + txn->writeset_.size();
-      
+
       // Request read locks (EXCLUSIVE LOCK if part A)
       for (set<Key>::iterator itr = txn->readset_.begin(); itr != txn->readset_.end(); itr++) {
         // block if the read lock could not be set (needs to wait or destroyed if total > 1)
@@ -164,7 +164,7 @@ void TxnProcessor::RunLockingScheduler() {
           }
         }
       }
-      
+
       // If all read and write locks were immediately acquired, this txn is
       if (!blocked) {
         ready_txns_.push_back(txn);
@@ -328,7 +328,7 @@ void TxnProcessor::RunOCCScheduler() {
       // If transaction is valid and not aborted => Write the write commands
       // Set the status to COMMITTED
       else if (valid && finishedTask->Status() == COMPLETED_C) {
-        // Write key and value for every finishedTask reads and writes before 
+        // Write key and value for every finishedTask reads and writes before
         for (map<Key, Value>::iterator itr = finishedTask->writes_.begin(); itr != finishedTask->writes_.end(); ++itr) {
           storage_->Write(itr->first, itr->second, finishedTask->unique_id_);
         }
@@ -346,7 +346,7 @@ void TxnProcessor::RunOCCScheduler() {
         NewTxnRequest(finishedTask);
         continue;
       }
-      
+
       // Else...
       // That means the task status is invalid.
       // KILL
@@ -397,49 +397,52 @@ void TxnProcessor::RunMVCCScheduler() {
   }
   txn_results_.Push(txn);
 }
- 
+
 void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
   //1. Read all necessary data for this transaction from storage (Note that you should lock the key before each read)
-  for (set<Key>::iterator it = txn->readset_.begin();
-       it != txn->readset_.end(); ++it) {
-    Value result;
+  Value result;
+  for (set<Key>::iterator itr = txn->readset_.begin(); it != txn->readset_.end(); itr++) {
+
     //lock before read
-    storage_->Lock(*it);
-    if (storage_->Read(*it, &result)) {
-      txn->reads_[*it] = result;
+    storage_->Lock(*itr);
+    if (storage_->Read(*itr, &result, txn->unique_id_)) {
+      txn->reads_[*itr] = result;
     }
+
+    // unlock:
     storage_->Unlock(*it);
   }
 
   // Also read everything in from writeset.
-  for (set<Key>::iterator it = txn->writeset_.begin();
-       it != txn->writeset_.end(); ++it) {
+  for (set<Key>::iterator itr = txn->writeset_.begin();
+       itr != txn->writeset_.end(); itr++) {
     // Save each read result iff record exists in storage.
-    Value result;
+    //Value result;
     //lock before read
-    storage_->Lock(*it);
-    if (storage_->Read(*it, &result)) {
-     
-      txn->reads_[*it] = result;
-    }   
+    storage_->Lock(*itr);
+    if (storage_->Read(*itr, &result, txn->unique_id_)) {
+      txn->reads_[*itr] = result;
+    }
+
+    // unlock:
     storage_->Unlock(*it);
   }
 
   //2. Execute the transaction logic (i.e. call Run() on the transaction)
-    
+
   txn->Run();
 
-  //3. Acquire all locks for keys in the write_set_
-  for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
-    storage_->Lock(*it);
+  //3. Acquire all locks for ALL keys in the write_set_
+  for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
+    storage_->Lock(*itr);
   }
 
   //4. Call MVCCStorage::CheckWrite method to check all keys in the write_set_
-    
+
   bool verified = false;
-  for (set<Key>::iterator it = txn->writeset_.begin();
-       it != txn->writeset_.end(); ++it) {
-    if (storage_->CheckWrite(*it, txn->unique_id_)) {
+  for (set<Key>::iterator itr = txn->writes_.begin();
+       itr != txn->writes_.end(); itr++) {
+    if (storage_->CheckWrite(*itr, txn->unique_id_)) {
       verified = true;
     }
     else {
@@ -449,8 +452,8 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
   }
 
   //5. If (each key passed the check)
-    
-  if (verified) {  
+
+  if (verified) {
     //6. Apply the writes
     ApplyWrites(txn);
 
@@ -458,15 +461,16 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
       storage_->Unlock(*it);
     }
+    // Hand the txn back to the RunScheduler thread.
+    completed_txns_.Push(txn);
   }
-
   // 8. else if (at least one key failed the check)
   else {
     //9. Release all locks for keys in the write_set_
-    for (set<Key>::iterator it = txn->writeset_.begin(); it != txn->writeset_.end(); ++it) {
-      storage_->Unlock(*it);
+    for (set<Key>::iterator itr = txn->writeset_.begin(); itr != txn->writeset_.end(); itr++) {
+      storage_->Unlock(*itr);
     }
-    
+
     //10. Cleanup txn
     txn->reads_.empty();
     txn->writes_.empty();
@@ -476,8 +480,7 @@ void TxnProcessor::MVCCExecuteTxn(Txn* txn) {
     NewTxnRequest(txn);
 
   }
-  // Hand the txn back to the RunScheduler thread.
-  completed_txns_.Push(txn);
+
 }
 
 
